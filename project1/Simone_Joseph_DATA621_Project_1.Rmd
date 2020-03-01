@@ -1,0 +1,722 @@
+---
+title: "Money Ball - Data 621 Project 1"
+author: "Jack Russo, Javern Wilson, Joseph Simone, Anthony Munoz, Paul Perez"
+date: "03-01-2020"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    theme: yeti
+    highlight: pygments
+  pdf_document:
+    df_print: tibble
+    toc: true
+    toc_depth: 2
+---
+
+<STYLE>
+table {
+    border: 1px solid black;
+}
+th {
+    background-color: rgb(12, 99, 204);
+    color: white;
+    font-weight: bold;
+    padding: 20px 30px;
+}
+tr:nth-child(even) {
+    background-color: rgb(220,220,220);
+}
+tr:nth-child(odd) {
+    background-color: rgb(184, 174, 174);
+}
+</STYLE>
+
+
+**Overview**
+
+In this homework assignment, we will explore, analyze and model a data set containing approximately 2200 records. This analysis attempts to predict the number of wins for the teams. Each record represents a professional baseball team from the years 1871 to 2006 inclusive. Each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance of a 162 game season.
+
+```{r include = FALSE}
+#knitr::opts_chunk$set(echo=FALSE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(gridExtra)
+library(kableExtra)
+library(MASS)
+library(lindia)
+library(DT)
+library(corrplot)
+library(psych)
+library(VIM)
+library(mice)
+library(car)
+library(caret)
+library(e1071)
+library(Amelia)
+```
+
+## Part I. DATA EXPLORATION
+
+### Preview
+
+Below is a preview of what the dataset contains.
+```{r}
+moneyball_training_data <- read.csv('moneyball-training-data.csv', stringsAsFactors = F, header = T)
+head(moneyball_training_data, 10)
+
+```
+
+### Structure of Data
+
+```{r}
+str(moneyball_training_data)
+```
+
+At first glance, we can see that `TEAM_BATTING_HBP` has a lot of missing data. Let's look at the summary to see if it reveals further information on the data.
+
+### Summary of Data
+
+```{r}
+summary(moneyball_training_data)
+```
+
+Based on the summary above we have our work cut out for us, especially when handling missing values. There are 6 variables with missing values:
+
++ **TEAM_BATTING_SO**: `102`
+
++ **TEAM_BASERUN_SB**: `131` 
+
++ **TEAM_BASERUN_CS**: `772`
+
++ **TEAM_BATTING_HBP**: `2085`
+
++ **TEAM_PITCHING_SO**: `102`
+
++ **TEAM_FIELDING_DP**: `286`
+
+Some variables also have a minumum of 0. Whether or not there values affect our model outcome will be interesting to find out as we move forward.
+
+```{r}
+round((sum(complete.cases(moneyball_training_data))/nrow(moneyball_training_data))*100,2)
+```
+About only `8%` of the data has complete rows.
+
+On this next plot is a graphic representation of what variable has missing values. As mentioned earlier, the six variables that have missing values can be visually observed here. One of our goal when completing the project is knowing how to handle missing values effectively in order to reduce bias and produce useful and powerful models.
+
+```{r, fig.height=6, fig.width=7}
+
+aggr(moneyball_training_data[,-1], 
+     labels = names(moneyball_training_data[,-1]), 
+     col=c('navyblue','yellow'), cex.axis = .7, 
+     oma = c(7,4,2,2))
+```
+
+
+### Further Descriptive Analytics
+
+Here we look at more descriptive analytics on the raw dataset.
+```{r}
+describe(moneyball_training_data[,-1])
+```
+
+### Boxplot: Exploring Outliers
+
+Histogram graphic for each variable
+
+```{r, fig.width=10, fig.height= 9}
+ggplot(stack(moneyball_training_data[,-1]), aes(x = ind, y = values)) + 
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 1000)) +
+  theme(legend.position="none") +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  theme(panel.background = element_rect(fill = 'grey'))
+```
+
+```{r}
+outliers <- boxplot(moneyball_training_data[,-1], plot = F)$out
+out <- c(sum(moneyball_training_data$TARGET_WINS %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_H %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_2B %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_3B %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_HR %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_BB %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_SO %in% outliers),
+sum(moneyball_training_data$TEAM_BASERUN_SB %in% outliers),
+sum(moneyball_training_data$TEAM_BASERUN_CS %in% outliers),
+sum(moneyball_training_data$TEAM_BATTING_HBP %in% outliers),
+sum(moneyball_training_data$TEAM_PITCHING_H %in% outliers),
+sum(moneyball_training_data$TEAM_PITCHING_HR %in% outliers),
+sum(moneyball_training_data$TEAM_PITCHING_BB %in% outliers),
+sum(moneyball_training_data$TEAM_PITCHING_SO %in% outliers),
+sum(moneyball_training_data$TEAM_FIELDING_E %in% outliers),
+sum(moneyball_training_data$TEAM_FIELDING_DP %in% outliers))
+
+out_df <-data.frame(names(moneyball_training_data[,-1]), out)
+colnames(out_df)<- c("Item", "Count")
+
+
+ggplot(out_df, aes(x = Item, y=Count, color = Item)) + geom_bar(stat="identity", fill = "white")+
+  geom_text(aes(label=Count), vjust=1.3, color = "black", size=3.5)+
+  theme_minimal() +  theme(text = element_text(size=8), axis.text.x = element_text(angle = 90, hjust = 1)) + theme(legend.position = "none")
+```
+
+Results show that TEAM_FIELDING_E has the most outliers amongst the predictors ad target variable.
+
+### Skewness in Data
+
+Histogram graphic displaying the distribution for each variables.
+```{r message=FALSE, warning=FALSE, fig.width=10, fig.height= 9, fig.align = 'center'}
+moneyball_df1 = melt(moneyball_training_data[,-1])
+ggplot(moneyball_df1, aes(x= value)) + 
+    geom_density(fill='blue') + facet_wrap(~variable, scales = 'free') 
+```
+
+
+### Correlations
+
+```{r, fig.width=10, fig.height= 9}
+pairs.panels(moneyball_training_data[2:8])
+pairs.panels(moneyball_training_data[9:17]) 
+```
+
+
+Closer look at correlations with dependant variable.
+```{r, fig.width=9, fig.height=6, fig.align = 'center'}
+# To begin, let's find the most correlated variables to seasonal wins. 
+
+# Buld Corrplot
+corrplot(cor(moneyball_training_data[-1], moneyball_training_data$TARGET_WINS, use = "na.or.complete"),
+type = "lower", 
+order = "original", tl.col = "black", tl.srt = 45, tl.cex = 0.55, cl.pos='n', addgrid.col = FALSE)
+```
+
+From this Corrplot, we can see the variables `Team_Batting_H,Team_Batting_2B,Team_Batting_HR, Team_Batting_BB, Team_Pitching_H,Team_Pitching_HR, and Team_Pitching_BB`, all are positively correlated with Target_Wins. Not all variables we'd expect to have a positive contribution do so. For example the number of three base hits is negatively correlated with total wins. Why two base hits contributes positively and three base hits does the opposite is unclear. Walks allowed is also strangely positively correlated with wins. 
+
+
+## Part II. DATA PREPARATION
+
+We will prepare our data using two formats: Filtering using booleans and missing value imputation. The outcome of how the models perform will based on the results provided by these two methods.
+
+**Objective 1**:
+Ensure each variable can independently explain the variance in total wins. Ideally the residuals are smoothly and independently distributed around 0. Our aim should be to construct a vector of booleans that filters the noise from our explanatory variables.
+
+**Objective 2**:
+Missing values can be a problem when trying to do analysis on the data. In most models, missing values are excluded which can limit the amount of information available in the analysis. This is the case why we have to either remove the missing values, impute them or model them. In this example, missing values will be imputed.
+
+
+### Filtering Noise
+
+#### Doubles vs Residuals 
+```{r, fig.align   = 'center'}
+plot(
+  moneyball_training_data$TEAM_BATTING_2B,
+  rstandard(
+    lm(TARGET_WINS ~ TEAM_BATTING_2B, data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Doubles",
+  main = "Null Model"
+  )
+```
+
+For a range from 150 to 350 doubles, the explanatory variable doubles apears to satisfy our assumptions (independence, homoscedasity) well. Most of our doubles data points are confined to this range. Therefore our transformation will consist of constraining the range of our explanatory variable.
+
+#### Doubles Range (150 -350) vs Residuals
+
+```{r, fig.align = 'center'}
+plot(
+  moneyball_training_data$TEAM_BATTING_2B[(moneyball_training_data$TEAM_BATTING_2B > 150) &
+                                            (moneyball_training_data$TEAM_BATTING_2B < 350)],
+  rstandard(
+    lm(
+      TARGET_WINS[(moneyball_training_data$TEAM_BATTING_2B > 150) & 
+                    (moneyball_training_data$TEAM_BATTING_2B < 350)] ~
+        TEAM_BATTING_2B[(moneyball_training_data$TEAM_BATTING_2B > 150) & 
+                          (moneyball_training_data$TEAM_BATTING_2B < 350)],
+  data = moneyball_training_data)),
+  ylab = "Residuals", 
+  xlab = "Doubles", 
+  main = "Constrained Range Model"
+  )
+```
+
+This worked very well. We can now create modified doubles and wins variables with only this range to use in our final model.
+
+```{r}
+# Doubles Range
+doubles_range <- (moneyball_training_data$TEAM_BATTING_2B > 150) & 
+  (moneyball_training_data$TEAM_BATTING_2B < 350)
+```
+
+#### Home Runs vs Residuals
+
+```{r, fig.align = 'center'}
+
+plot(
+  moneyball_training_data$TEAM_BATTING_HR,
+  rstandard(lm(TARGET_WINS ~ TEAM_BATTING_HR,
+  data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Home Runs",
+  main = "Null Model" 
+  )
+```
+
+The explainitory variable Home Runs appears to satisfy our assumptions (independence, homoscedasity) well.There does appear to be some curvature for the home run range less than 50. We can take the square root of the explanatory variable to flatten this fish tail in the data 
+
+#### Home Runs vs Residuals
+
+```{r, fig.align = 'center'}
+plot(
+  sqrt(
+    moneyball_training_data$TEAM_BATTING_HR),
+  rstandard(lm(TARGET_WINS ~ sqrt(TEAM_BATTING_HR),
+  data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Home Runs",
+  main = "Sqrt Home Runs Model"
+  )
+```
+
+We can see this transformation has flattened the residuals overall but has left a gap in the data points at the lower end of Home Runs. Again we can constrain our range to observations greater than square root 7 and less than 12.
+
+```{r, fig.align = 'center'}
+# Home Runs vs Residuals
+plot(
+  sqrt(
+    moneyball_training_data$TEAM_BATTING_HR[(sqrt(moneyball_training_data$TEAM_BATTING_HR) > 9) &
+    (sqrt(moneyball_training_data$TEAM_BATTING_HR) < 12)]),
+  rstandard(
+    lm(
+      TARGET_WINS[(sqrt(moneyball_training_data$TEAM_BATTING_HR) > 9) & 
+                    (sqrt(moneyball_training_data$TEAM_BATTING_HR) < 12)] ~
+        sqrt(TEAM_BATTING_HR[(sqrt(moneyball_training_data$TEAM_BATTING_HR) > 9) & (sqrt(moneyball_training_data$TEAM_BATTING_HR) < 12)]),
+       data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Home Runs",
+  main = "Sqrt Home Runs Model / Constrained Range" )
+```
+
+
+As can be seen from the range of residuals, the preceeding transformations have provided an explanatory variable that satisfies our assumptions. We can now further filter our data with a new explanatory variable and filtered target variable.
+
+```{r}
+# New Filter
+HR_range <- (sqrt(moneyball_training_data$TEAM_BATTING_HR) > 9) & 
+  (sqrt(moneyball_training_data$TEAM_BATTING_HR) < 12)
+```
+
+#### Walks vs Residuals
+
+```{r, fig.align = 'center'}
+plot(
+  moneyball_training_data$TEAM_BATTING_BB,
+  rstandard(
+    lm(TARGET_WINS ~ TEAM_BATTING_BB,
+  data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Walks",
+  main = "Null Model"
+  )
+```
+
+For walks we can see a situation similar to doubles. Let's zoom into the range between 400 and 700
+
+```{r, fig.align = 'center'}
+# Walks Range (400 - 700) vs Residuals 
+plot(
+  moneyball_training_data$TEAM_BATTING_BB[(moneyball_training_data$TEAM_BATTING_BB > 400) &
+                                            (moneyball_training_data$TEAM_BATTING_BB < 700)],
+  rstandard(
+    lm(
+      TARGET_WINS[(moneyball_training_data$TEAM_BATTING_BB > 400) & 
+                    (moneyball_training_data$TEAM_BATTING_BB < 700)] ~
+        moneyball_training_data$TEAM_BATTING_BB[(moneyball_training_data$TEAM_BATTING_BB > 400) &
+                                                  (moneyball_training_data$TEAM_BATTING_BB < 700)],
+  data = moneyball_training_data)),
+  ylab = "Residuals",
+  xlab = "Walks",
+  main = "Constrained Range Model")
+```
+
+
+Much better! Let's store the boolean vector for walks.
+
+```{r, warning=FALSE}
+walks_range <- (moneyball_training_data$TEAM_BATTING_BB > 400) & 
+  (moneyball_training_data$TEAM_BATTING_BB < 700)
+```
+
+#### Strikeouts
+
+```{r, fig.align = 'center'}
+# Strikeouts vs Residuals 
+plot(
+  moneyball_training_data$TEAM_BATTING_SO[complete.cases(moneyball_training_data$TEAM_BATTING_SO)],
+  rstandard(
+    lm(
+      TARGET_WINS[complete.cases(moneyball_training_data$TEAM_BATTING_SO)] ~
+        moneyball_training_data$TEAM_BATTING_SO[complete.cases(moneyball_training_data$TEAM_BATTING_SO)],
+       data = moneyball_training_data
+      )
+    ),
+  ylab = "Residuals",
+  xlab = "Strikeouts",
+  main = "Null Model"
+  )
+```
+
+
+```{r, fig.align = 'center'}
+# Strikeouts vs Residuals 
+plot(
+  moneyball_training_data$TEAM_BATTING_SO[complete.cases(moneyball_training_data$TEAM_BATTING_SO) & (moneyball_training_data$TEAM_BATTING_SO > 400) & 
+(moneyball_training_data$TEAM_BATTING_SO < 1100)],
+  rstandard(
+    lm(
+      TARGET_WINS[complete.cases(moneyball_training_data$TEAM_BATTING_SO) & 
+                    (moneyball_training_data$TEAM_BATTING_SO > 400) & 
+                    (moneyball_training_data$TEAM_BATTING_SO < 1100)] ~
+        moneyball_training_data$TEAM_BATTING_SO[complete.cases(moneyball_training_data$TEAM_BATTING_SO) &                     (moneyball_training_data$TEAM_BATTING_SO > 400) & 
+        (moneyball_training_data$TEAM_BATTING_SO < 1100)],
+       data = moneyball_training_data
+      )
+    ),
+  ylab = "Residuals",
+  xlab = "Strikeouts",
+  main = "Constrained Range Model")
+```
+
+```{r}
+strikeouts_range <- complete.cases(moneyball_training_data$TEAM_BATTING_SO) & 
+  (moneyball_training_data$TEAM_BATTING_SO > 400) & 
+  (moneyball_training_data$TEAM_BATTING_SO < 1100)
+```
+
+
+#### Fielding Errors
+
+```{r, fig.align = 'center'}
+# Strikeouts vs Residuals 
+plot(
+  moneyball_training_data$TEAM_FIELDING_E,
+  rstandard(
+    lm(
+      TARGET_WINS ~ moneyball_training_data$TEAM_FIELDING_E,
+       data = moneyball_training_data
+      )
+    ),
+  ylab = "Residuals",
+  xlab = "Feilding Errors",
+  main = "Null Model")
+```
+
+#### Feilding Errors vs Residuals
+
+```{r, fig.align = 'center'}
+plot(
+  moneyball_training_data$TEAM_FIELDING_E[(moneyball_training_data$TEAM_FIELDING_E < 175) & (moneyball_training_data$TEAM_FIELDING_E > 110)],
+  rstandard(
+    lm(
+      TARGET_WINS[(moneyball_training_data$TEAM_FIELDING_E < 175) & 
+                    (moneyball_training_data$TEAM_FIELDING_E > 110)] ~
+        moneyball_training_data$TEAM_FIELDING_E[(moneyball_training_data$TEAM_FIELDING_E < 175) &
+        (moneyball_training_data$TEAM_FIELDING_E > 110)],
+       data = moneyball_training_data
+      )
+    ),
+  ylab = "Residuals",
+  xlab = "Feilding Errors",
+  main = "Constrained Range Model")
+```
+
+```{r}
+# Feilding Error Boolean
+feilding_error_range <- (moneyball_training_data$TEAM_FIELDING_E < 175) & 
+  (moneyball_training_data$TEAM_FIELDING_E > 110)
+```
+
+
+Combine Vectors and Filter Training Dataset.
+
+```{r}
+# Build Metafilter 
+meta_filter <-moneyball_training_data[,-1][doubles_range & HR_range & 
+                                             walks_range & strikeouts_range & 
+                                             feilding_error_range,]
+```
+
+
+
+### Impute Missing data
+
+```{r}
+temp <- mice(moneyball_training_data[,-1],m=5,maxit=10,meth='pmm',seed=500, printFlag = F)
+imputed_train_data <- complete(temp)
+```
+
+#### Preview
+
+Look especially at the the variable TEAM_BATTING_HBP compared to original data it has 90% of its values missing.
+```{r}
+head(imputed_train_data, 10)
+
+```
+
+Visual of complete dataset
+```{r}
+Amelia::missmap(imputed_train_data)
+```
+
+The dataset now consist of only complete rows where each missing value is replaced via  the predictive mean method.
+
+```{r}
+densityplot(temp)
+```
+
+The imputed points are red and the obserced are blue. The matching shape of each distribution would tell us that the imputed values are plausible enough.
+
+
+The Stripplot shows where the missing values were imputed based on the variables.
+```{r}
+stripplot(temp, pch = 20, cex = 1.2)
+```
+
+
+After imputation we can see that every variable has a value in each row and the NAs are gone.
+```{r}
+summary(imputed_train_data)
+```
+
+#### Transformation: Centering and Scaling
+
+```{r}
+mb = preProcess(imputed_train_data, 
+                   c("BoxCox", "center", "scale"))
+moneyball_transformed = data.frame(
+      mb = predict(mb, imputed_train_data))
+```
+
+
+```{r message=FALSE, warning=FALSE, fig.align = 'center'}
+moneyball_transformed1 = melt(moneyball_transformed)
+ggplot(moneyball_transformed1, aes(x= value)) + 
+    geom_density(fill='blue') + facet_wrap(~variable, scales = 'free') 
+```
+
+
+```{r, fig.width=9, fig.height=6, fig.align = 'center'}
+# Build Corrplot
+corrplot(cor(imputed_train_data[-1], imputed_train_data$TARGET_WINS, use = "na.or.complete"),
+type = "lower", 
+order = "original", tl.col = "black", tl.srt = 45, tl.cex = 0.55, cl.pos='n', addgrid.col = FALSE)
+```
+
+We have more postive correlation with the target variable than the previous correlation plot.
+
+
+
+## Part III. BUILD MODELS
+
+### Model 1
+
+For the first model approach, we decide to create a regression on the raw data using all the variables on the data set. As we can observe we have many variables that don't have a good significance level. In our first model attempt, we obtain an R Squared value of 0.5501 and an adjusted R-square value of 0.5116, noticing that the difference maybe because of the numbers of variables in the regression that doesn't have a significance level. Also, we obtain a low F-statistic result.
+
+```{r}
+lm.train <- lm(TARGET_WINS ~., data = moneyball_training_data[,-1])
+summary(lm.train)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train)
+gg_reshist(lm.train)
+```
+
+On a whole, the model is significant. However `2085` observations were removed due to missingness which makes the model skeptical. The residual plot seems normal with the points distributed randomly. We should be somewhat concerned with the outliers in the qq-plot which caused the tails of the plot to turn into the opposite direction. The variation in the third plot (bottom-left) seems to display homoscedasticity.
+
+### Model 2 
+
+With this model we started doing an approach by filtering some of the noise in our variables (Doubles, Home runs, Walks, Strikeouts, fielding error). On this model we didn't see too much improvement, R square went down comparing to the first model but the F-statistics went slightly higher. As stated earlier, this model was built on a filtering method which kept 506 observations for the model to work with. An additional 33 were removed due to missingness.
+```{r}
+lm.train2 = lm(TARGET_WINS ~ TEAM_BATTING_H + TEAM_BATTING_2B + TEAM_BATTING_3B + 
+                 TEAM_BATTING_HR + TEAM_BATTING_BB + TEAM_BATTING_SO + TEAM_BASERUN_SB + 
+                 TEAM_BASERUN_CS + TEAM_PITCHING_H + TEAM_PITCHING_HR + TEAM_PITCHING_BB + 
+                 TEAM_PITCHING_SO + TEAM_FIELDING_E +  TEAM_FIELDING_DP , data = meta_filter)
+summary(lm.train2)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train2)
+gg_reshist(lm.train2)
+```
+
+
+### Model 3
+
+We observed that we have a lot missing data in our raw dataset and to solve this and hope to see an improvement in our model we decide to work by doing multiple imputations in our training data and after that create a new model. 
+
+```{r}
+lm.train3 <- lm(TARGET_WINS ~., data = imputed_train_data)
+summary(lm.train3)
+```
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train3)
+gg_reshist(lm.train3)
+```
+
+In this model, we definitely obtained more statistical significance variables and a good increase on f-statistics.
+This is an improvement compared to model 2 because the missing values were imputed. This gave the model more options to work with. 
+
+### Model 4
+
+This model is built on removing multicollinearity from the model 3 for improved results. The rule of thumb is to remove any variables with a score of more than 5.
+```{r}
+vif(lm.train3)
+```
+
+TEAM_BATTING_HR has a high VIF (highly correlated) score so it will be the first to be removed from the model.  
+
+```{r}
+lm.train4 <- update(lm.train3, .~. - TEAM_BATTING_HR, data = imputed_train_data)
+vif(lm.train4)
+```
+
+Next we remove TEAM_BATTING_BB
+
+```{r}
+lm.train4 <- update(lm.train4, .~. - TEAM_BATTING_BB, data = imputed_train_data)
+vif(lm.train4)
+```
+
+TEAM_BATTING_SO 
+```{r}
+lm.train4 <- update(lm.train4, .~. - TEAM_BATTING_SO, data = imputed_train_data)
+vif(lm.train4)
+```
+
+Multicollinearity is no longer present in this model. We can establish that `TEAM_BATTING_BB, TEAM_BATTING_SO and TEAM_BATTING_HR ` are all dependent on other predictor variables and so they were removed from the model.
+
+```{r}
+summary(lm.train4)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train4)
+gg_reshist(lm.train4)
+```
+
+Even with multicollinearity removed, the Adj R-Squared did not increase. There is curvature in the scale-location plot which indicates non-contant variance.
+
+
+### Model 5
+
+Using Transformed data and removing collinearity
+```{r}
+
+lm.train5 <- lm(mb.TARGET_WINS ~ mb.TEAM_BATTING_H + mb.TEAM_BATTING_2B + mb.TEAM_BATTING_3B + 
+                  mb.TEAM_BASERUN_SB +	mb.TEAM_BASERUN_CS +	mb.TEAM_BATTING_HBP	+ mb.TEAM_PITCHING_H +
+                  mb.TEAM_PITCHING_HR + mb.TEAM_PITCHING_BB +	mb.TEAM_PITCHING_SO	+ mb.TEAM_FIELDING_E +
+                  mb.TEAM_FIELDING_DP, moneyball_transformed)
+
+summary(lm.train5)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train5)
+gg_reshist(lm.train5)
+```
+
+The previous models showed a much wider spread however the residuals in this model are closer to 0. The plots seem normal. There are outliers noted but not to the point where we have to worry too much as we have more than 2000 observations to consider.
+
+
+
+### Model 6
+
+Backward selection
+
+This model we going to work with Backward selection. We run a backward selection on the raw data in order to find the most significant variables. We get a high R square 0.5345 but a decrease in the F-statistic.
+
+```{r}
+lm.train6 <- lm(TARGET_WINS ~., data = moneyball_training_data[,-1])
+
+summary(step(lm.train6, direccion='backward', trace = F))
+
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train6)
+gg_reshist(lm.train6)
+```
+
+This model can be compared with Model 1. The difference is that only the statistically significant predictors remain which indeed improved the output of the model.
+
+### Model 7
+
+Stepwise selection
+
+This model we work with stepwise selection both (forward and backward). We used the imputed data and comparing with model 6. 
+
+```{r}
+lm.train7 <- lm(TARGET_WINS ~., data = imputed_train_data)
+lm.inter <- lm(TARGET_WINS ~ 1, data = imputed_train_data)
+
+summary(step(lm.inter, direccion='both', scope = formula(lm.train7), trace = F))
+
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(lm.train7)
+gg_reshist(lm.train7)
+```
+
+Definitely an improvement due to an increase in both the Adj R-Squared and F-statistic compared to models 3 and 6. The plots follow some assumptions of the model such as normality. 
+
+
+
+
+## Part IV. SELECT MODELS
+
+
+After running 7 different models, we've decided to use **Model 7**. The approach taken for this model was that of stepwise which took steps in adding a variable, and then evaluated each of them to determine their significance to the model. The data selected was that of a cleaned up imputed data set. Our primary criteria for selecting the this model was comparing the Adjusted R-Squared values and F-Statistics. While looking at each of the models Adjusted R-Squared values, we noticed that Models 1 and 6 had the hightest values of 0.5116 and 0.5167 respectively. Additionally, looking at there F-Statistic values, Model 1 had an F-Statistic of 14.27, and Model 6 had an F-Statistic of 30.02. While the Adjusted R-Squared values were the highest, we opted not to select these models because their F-Statistic values were too low, most of the observations were removed due to missingness and the data set for the model was that of the raw data. 
+
+Being left with Models 2, 3, 4, 5, and 7, we can loosely look at Model 2, which used a filtered data set, and eliminate it for it had the lowest Adjusted R-Squared value of 0.3014 and a low F-Statistic value of 15.63. Model 3 was one of the favorite models because it had a higher Adjusted R-Squared value of 0.3674 and F-Statistic of 89.1. The method taken here was apply multiple imputations in our training data set and hope to see better results. This held true, but we took additional measures in Model 4 to improve Model 3. We wanted to remove the multicollinearity that was in Model 3, so we evaluate the Variance Inflation Factor (VIF) for each variable in the model. If the VIF was above 5, we could say that the variable had a correlation with another variable. Model 4 removed 3 variables (TEAM_BATTING_BB, TEAM_BATTING_SO and TEAM_BATTING_HR), as they were all dependent on other predictor variables. While doing this, we did not see an improvement in our Adjusted R-Squared value, 0.351, but did see an increase in our F-Statistic, now above 100, at 103.5. Model 5 used the transformed data and also removed the variables associated with multicollinearity, and again, we saw a lower Adjusted R-Squared value of 0.3166 and a lower F-Statistic of 88.83. 
+
+Comparing all of our models to Model 7, we saw the greatest Adjusted R-Squared value of 0.3676 and the second highest F-Statistic of 95.45. We valued the Adjusted R-Squared value for these models more than the F-Statistic, even though the F-Statistic was important.
+
+```{r}
+moneyball_evaluation_data <- read.csv('moneyball-evaluation-data.csv', header = T, stringsAsFactors = F)
+moneyball_evaluation_data <- moneyball_evaluation_data[,-1]
+```
+
+```{r}
+imputed_moneyball_evaulated_df <- mice(moneyball_evaluation_data, m=5, maxit = 5, method = 'pmm', printFlag = F)
+imputed_moneyball_evaulated_df <- complete(imputed_moneyball_evaulated_df)
+```
+
+```{r}
+eval_data <- predict(lm.train7, newdata = imputed_moneyball_evaulated_df, interval="prediction")
+write.csv(eval_data, "moneyball_preds.csv", row.names = F)
+head(eval_data, 30)
+
+```
+
+## Appendix
+
+Rcode: [Github]()
+
+Predicted Runs: [Github]()
