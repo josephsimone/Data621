@@ -1,0 +1,236 @@
+---
+title: "Data 612 Project# 2"
+author: "Joseph Simone"
+date: "03/01/2020"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    theme: cerulean
+    highlight: pygments
+---
+
+<STYLE>
+table {
+    border: 1px solid black;
+}
+th {
+    background-color: rgb(12, 99, 204);
+    color: white;
+    font-weight: bold;
+    padding: 20px 30px;
+}
+tr:nth-child(even) {
+    background-color: rgb(220,220,220);
+}
+tr:nth-child(odd) {
+    background-color: rgb(184, 174, 174);
+}
+</STYLE>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align="center")
+```
+
+
+```{r , message=FALSE, warning=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(knitr)
+library(recommenderlab)
+library(dplyr)
+library(ggplot2)         
+library(ggrepel)         
+library(tictoc)
+```
+
+
+## Introduction
+
+The goal of this assignment is give you practice working with Matrix Factorization techniques.
+
+
+Your task is implement a matrix factorization method—such as singular value decomposition (SVD) or Alternating Least Squares (ALS)—in the context of a recommender system.
+
+
+You may approach this assignment in a number of ways. You are welcome to start with an existing recommender system written by yourself or someone else.
+
+Remember as always to cite your sources, so that you can be graded on what you added, not what you found. 
+
+SVD can be thought of as a pre-processing step for feature engineering. 
+
+You might easily start with thousands or millions of items, and use SVD to create a much smaller set of “k” items (e.g. 20 or 70). 
+
+
+## Load the Data
+
+The data set is from MovieLens project and it was downloaded from [Movie Lens](https://grouplens.org/datasets/movielens/)
+
+
+```{r}
+ratings <- read.csv(paste0("https://raw.githubusercontent.com/josephsimone/Data-612/master/project_2/Movie_Lens/ratings.csv"))
+movies <- read.csv(paste0("https://raw.githubusercontent.com/josephsimone/Data-612/master/project_2/Movie_Lens/movies.csv"))
+```
+
+
+
+## Convert to Matrix
+
+```{r echo=TRUE}
+m_m <- ratings %>%
+  select(-timestamp) %>%
+  spread(movieId, rating)
+row.names(m_m) <- m_m[,1]
+m_m <- m_m[-c(1)]
+m_m <- as(as.matrix(m_m), "realRatingMatrix")
+m_m
+```
+
+
+
+#### Normalization 
+
+```{r}
+norm_films <- normalize(m_m)
+avg_rating <- round(rowMeans(norm_films),5)
+table(avg_rating)
+```
+
+
+Our movie matrix contains 610 users and 9,724 items/movies.
+
+## Train and Test Sets
+
+Now we will split our data into train and test sets
+
+
+```{r}
+set.seed(123)
+eval <- evaluationScheme(norm_films, method = "split",
+                         train = 0.8, given= 20, goodRating=3)
+movie_train <- getData(eval, "train")
+movie_known <- getData(eval, "known")
+movie_unknown <- getData(eval, "unknown")
+```
+
+First, let's compare the complexity between a User-Based Collaborative Filtering and a Singular Value Decomposition (SVD) Model.
+
+##  User-Based Collaborative Filtering
+
+
+```{r}
+tic("UBCF Model - Training")
+UBCF_model <- Recommender(movie_train, method = "UBCF")
+toc(log = TRUE, quiet = TRUE)
+tic("UBCF Model - Predicting")
+UBCF_predict <- predict(UBCF_model, newdata = movie_known, type = "ratings")
+toc(log = TRUE, quiet = TRUE)
+(UBCF_accuracy <- calcPredictionAccuracy(UBCF_predict, movie_unknown) )
+```
+
+
+## Singular Value Decomposition (SVD) Model 
+
+When building this SVD Model, it will consists of  50 concepts or categories.
+
+```{r}
+tic("SVD Model - Training")
+modelSVD <- Recommender(movie_train, method = "SVD", parameter = list(k = 50))
+toc(log = TRUE, quiet = TRUE)
+tic("SVD Model - Predicting")
+predSVD <- predict(modelSVD, newdata = movie_known, type = "ratings")
+toc(log = TRUE, quiet = TRUE)
+( accSVD <- calcPredictionAccuracy(predSVD, movie_unknown) )
+```
+
+At first glance, the difference between the SVD and UBCF Models are very similar.
+
+Now comparing the run-time complexities.
+
+## Run-Time
+
+
+
+Let's explore their log displays to individually analyze their run-time.
+
+```{r}
+log <- as.data.frame(unlist(tic.log(format = TRUE)))
+colnames(log) <- c("Run Time")
+knitr::kable(log, format = "html") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+One major difference between SVD and UBCF Model is their run-times. 
+
+While the UBCF takes less time to build a model, it is more resource intensive in making predictions. 
+
+# Evaluation
+Let's evaluate our predictions by seeing the prediction matrix of a specific user.
+
+In this particular case, the $3^{rd}$ User from this DataSet.
+
+
+```{r}
+movie_rating <- as.data.frame(m_m@data[c("3"), ]) 
+colnames(movie_rating) <- c("Rating")
+movie_rating$movieId <- as.integer(rownames(movie_rating))
+movie_rating <- movie_rating %>% filter(Rating != 0) %>% 
+  inner_join (movies, by="movieId") %>%
+  arrange(Rating) %>%
+  select(Movie = "title", Rating)
+knitr::kable(movie_rating, format = "html") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+
+As we see that $3^{rd}$ user movie likes comes under action , horror & some animation.
+
+On the other hand, the genres rated  romantic & dramatic film genres very low.
+
+
+## SVD Model for 3rd user
+
+Exploring the movies suggested by SVD for the $3^{rd}$ user.
+
+
+```{r}
+recommend_movie <- as.data.frame(predSVD@data[c("3"), ]) 
+colnames(recommend_movie) <- c("Rating")
+recommend_movie$movieId <- as.integer(rownames(recommend_movie))
+recommend_movie <- recommend_movie %>% arrange(desc(Rating)) %>% head(6) %>% 
+  inner_join (movies, by="movieId") %>%
+  select(Movie = "title")
+knitr::kable(recommend_movie, format = "html") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+                               
+```
+
+
+When analyzing top 6 movies being recommended to the 3rd user , we see that they also are action, horror and animation genre movie categories.
+
+# Summary
+
+
+<strong>User-Based Collaborative Filtering:</strong>
+
+There are several problems that can occure during a USCF. First, is in regards for scalability. The computations increasingly grows with the amount customers and the products. 
+
+
+<strong> Singular Value Decomposition: </strong>
+
+When running a SVD Model, this decreases the dimension of the matrix by extracting latent factors. Thereofre, this model can handle the problems of scalability & sparsity. 
+
+However, SVD is not still not a perfect model. One of the drawbacks being  there is  are no clear reasoning as to why the recommendation was made to a user. This can become problematic if the user wants to know why this recommendation has occured. 
+
+## Appendix
+
+Rcode: [Github](https://github.com/josephsimone/Data-612/blob/master/project_2/Simone_Joseph_Project_2.Rmd)
+
+Project Repo: [Github](https://github.com/josephsimone/Data621/tree/master/project3)
+
+
