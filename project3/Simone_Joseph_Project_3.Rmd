@@ -153,9 +153,7 @@ Now comparing the run-time complexities.
 
 ## Run-Time
 
-
-
-Let's explore their log displays to individually analyze their run-time.
+Let's explore the models' log displays to to better understand their complexities..
 
 ```{r}
 log <- as.data.frame(unlist(tic.log(format = TRUE)))
