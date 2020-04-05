@@ -1,0 +1,401 @@
+---
+title: "DATA621 Homework 3"
+author: "Joseph Simone, Jack Russo, Javern Wilson, Paul Perez"
+date: "3/22/2020"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    highlight: pygments
+    theme: cerulean
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(caret)
+library(e1071)
+library(pracma)
+library(pROC)
+library(psych)
+library(kableExtra)
+library(Hmisc)
+library(VIF)
+library(FactoMineR)
+library(corrplot)
+library(purrr)
+library(dplyr)
+library(MASS)
+library(png)
+```
+## Overview
+In this homework assignment, we will explore, analyze and model a data set containing information on crime for various neighborhoods of a major city. Each record has a response variable indicating whether or not the crime rate is above the median crime rate (1) or not (0).
+Our objective is to build a binary logistic regression model on the training data set to predict whether the neighborhood will be at risk for high crime levels. We will provide classifications and probabilities for the evaluation data set using our binary logistic regression model. 
+We will only use the variables provided to us (or variables that we derived from the variables given). Below is a short description of the variables of interest in the data set:
+- `zn`: proportion of residential land zoned for large lots (over 25000 square feet) (predictor variable)
+- `chas`: a dummy var. for whether the suburb borders the Charles River (1) or not (0) (predictor variable)
+- `nox`: nitrogen oxides concentration (parts per 10 million) (predictor variable)
+- `rm`: average number of rooms per dwelling (predictor variable)
+- `age`: proportion of owner-occupied units built prior to 1940 (predictor variable)
+- `dis`: weighted mean of distances to five Boston employment centers (predictor variable)
+- `rad`: index of accessibility to radial highways (predictor variable)
+- `tax`: full-value property-tax rate per $10,000 (predictor variable)
+- `ptratio`: pupil-teacher ratio by town (predictor variable)
+- `black`: 1000(Bk - 0.63)2 where Bk is the proportion of blacks by town (predictor variable)
+- `lstat`: lower status of the population (percent) (predictor variable)
+- `medv`: median value of owner-occupied homes in $1000s (predictor variable)
+- `target`: whether the crime rate is above the median crime rate (1) or not (0) (response variable)
+## Data Import and Preview
+```{r}
+crime <- read.csv("https://raw.githubusercontent.com/josephsimone/Data621/master/project3/crime-training-data_modified.csv")
+crime_eval <- read.csv("https://raw.githubusercontent.com/josephsimone/Data621/master/project3/crime-evaluation-data_modified.csv")
+kable(head(crime))
+```
+## EDA
+### Number of Target Variables 
+```{r}
+target_variables <- table(crime$target)
+target_variables
+```
+### Dataset Summaries
+```{r}
+kable(summary(crime[1:6]))
+kable(summary(crime[7:12]))
+```
+### Distribution of Predictors
+```{r, , fig.width= 10, fig.height=9}
+hist.data.frame(crime)
+```
+```{r}
+ntrain<-select_if(crime, is.numeric)
+ntrain %>%
+  keep(is.numeric) %>%                     
+  gather() %>%                            
+  ggplot(aes(value)) +                     
+    facet_wrap(~ key, scales = "free") +   
+    geom_density()
+```
+### Boxplot
+Of each continuous independent variable with target.
+```{r, fig.width= 10, fig.height=9}
+par(mfrow = c(4,3))
+boxplot(zn~target, ylab="zn", xlab= "target", col="steel blue",data = crime)
+boxplot(indus~target, ylab="indus", xlab= "target", col="steel blue",data = crime)
+boxplot(chas~target, ylab="chas", xlab= "target", col="steel blue",data = crime)
+boxplot(nox~target, ylab="nox", xlab= "target", col="steel blue",data = crime)
+boxplot(rm~target, ylab="rm", xlab= "target", col="steel blue",data = crime)
+boxplot(age~target, ylab="age", xlab= "target", col="steel blue",data = crime)
+boxplot(dis~target, ylab="dis", xlab= "target", col="steel blue",data = crime)
+boxplot(rad~target, ylab="rad", xlab= "target", col="steel blue",data = crime)
+boxplot(tax~target, ylab="tax", xlab= "target", col="steel blue",data = crime)
+boxplot(ptratio~target, ylab="ptratio", xlab= "target", col="steel blue",data = crime)
+boxplot(lstat~target, ylab="lstat", xlab= "target", col="steel blue",data = crime)
+boxplot(medv~target, ylab="medv", xlab= "target", col="steel blue",data = crime)
+```
+From the above plots, we can infer that the crime rate is above the median when majority of the predictors are high. For instance, have a look at `nox` (nitrogen oxide) and `tax` (property tax).
+```{r}
+corrplot(cor(crime), method="square")
+```
+```{r}
+cor.test(crime$rad,crime$tax,method="pearson")
+```
+## DATA PREPARATION
+### Missing Cases
+```{r}
+# Check for missing cases
+any(is.na(ntrain))
+```
+There does not appear to be missing cases.
+### Scale Data
+Use scale function to scale all variables to mean and standard devatiotion of target variable. 
+```{r}
+# Target Stats
+mean(ntrain$target);sd(ntrain$target)
+```
+```{r}
+# Scale Predictor Variables
+ntrain.scaled <-  (as.data.frame(scale(ntrain[, -which(names(ntrain) == "target")])) + mean(ntrain$target)*2) / 2
+ntrain.scaled <-  cbind.data.frame(target = ntrain$target, ntrain.scaled)
+# Variable Mean and Standard Deviation
+colMeans(ntrain.scaled);apply(ntrain.scaled,2,sd)
+```
+After scaling, the predictor and responce variables posses approximately equal means and standard deviations.
+### Sigmoid Function
+We will use sigmoid function to scale all variables between zero and one.
+The following transformation will map each of the values on to the Logistic curve. This will allow us to construct a linear model on with the scaled data.
+```{r, warning=FALSE}
+y = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/88/Logistic-curve.svg/2560px-Logistic-curve.svg.png"
+download.file(y,'y.png', mode = 'wb')
+jj <- readPNG("y.png",native=TRUE)
+plot(0:1,0:1,type="n",ann=FALSE,axes=FALSE)
+rasterImage(jj,0,0,1,1)
+```
+```{r}
+# Squish Scaled Data
+ntrain.scaled.sigmoid <- as.data.frame(lapply(ntrain.scaled,sigmoid))
+# Variable Mean and Standard Deviation
+colMeans(ntrain.scaled.sigmoid);apply(ntrain.scaled.sigmoid,2,sd)
+## scale only predictors
+ntrain.scaled.sigmoid2 <- as.data.frame(lapply(ntrain.scaled[,-1],sigmoid))
+ntrain.scaled.sigmoid2$target <- crime$target
+```
+After applying the sigmoid function, the predictor and responce variables still retain approximately equal means and standard deviations.
+### Transform Predictors
+```{r}
+target <- crime$target
+mb = preProcess(crime[,-13], 
+                   c("BoxCox", "center", "scale", "nzv"))
+  crime_trans = data.frame(
+      ct = predict(mb, crime[,-13]))
+crime_trans$target <- target
+names(crime_trans) <- names(crime)
+```
+Here all variables were transformed except the target variable. The variables were transformed using Box-Cox. In addition, the variables were scaled, centered and non-zero-variance values were removed (if any).
+## BUILD MODELS
+### Model 1
+#### Build Binomial Regression Using The Scaled Data
+```{r,warning=FALSE}
+mod1 <- glm(target~., family = binomial, data = ntrain.scaled)
+summary(mod1)
+```
+```{r, warning=FALSE}
+mod1 <- stepAIC(mod1, trace = F)
+summary(mod1)
+```
+After using stepAIC method, ‘stepAIC’ function, we are now left with eight independent variables which also resulted in having the minimum AIC value so far.
+```{r}
+plot(mod1)
+```
+```{r}
+car::vif(mod1)
+```
+### Model 2
+#### Build Linear Regression Using the Sigmoid Scaled Data.
+```{r}
+mod2 <- lm(target~.,data = ntrain.scaled.sigmoid)
+mod2 <- stepAIC(mod2, trace = F)
+summary(mod2)
+```
+Using the sigmoid scaled data in a linear model has further contrained the relevant predictor variables and minimized the intercept (when compared to the binomial model). This suggests these adjusted variables contain most of the relevant information about this system. 
+```{r}
+plot(mod2)
+```
+```{r}
+car::vif(mod2)
+```
+### Model 3
+#### Build Linear Regression Using transformed Predictors.
+```{r}
+mod3 <- glm(target~., family = binomial, data = crime_trans)
+summary(mod3)
+mod3 <- stepAIC(mod3, trace = F)
+summary(mod3)
+```
+Results show that model did not improve with just transforming the predictors, even after using the stepAIC function. However, this model would be considered less complex as it has 1 less predictor than model 1 and model 2.
+```{r}
+car::vif(mod3)
+```
+```{r}
+plot(mod3)
+```
+### Model 4
+#### Build Generalized Linear Regression Using Sigmoid Scaled Data.
+```{r}
+mod4 <- glm(target~., family = binomial, data = ntrain.scaled.sigmoid2)
+summary(mod4)
+mod4 <- stepAIC(mod4, trace = F)
+summary(mod4)
+```
+```{r}
+car::vif(mod4)
+```
+```{r}
+plot(mod4)
+```
+ANOVA
+Model 2 is built on a different scale than the other 3 models, so it cannot be compared with them under the anova function. However we'll show what it looks like in that case.
+```{r}
+anova(mod1, mod2, test ="Chisq")
+anova(mod3, mod2, test ="Chisq")
+anova(mod4, mod2, test ="Chisq")
+```
+ANOVA (Comparing the other 3 models)
+```{r}
+anova(mod1, mod3, mod4, test ="Chisq")
+```
+**Model one** does seem to perform better than the other three models.
+## SELECT MODELS
+```{r}
+# Predict the probability of crime positivity
+probabilities <- predict(mod1, ntrain.scaled, type = "response")
+predicted.classes <- ifelse(probabilities > 0.5, 1, 0)
+ntrain.scaled$pred.class <- predicted.classes
+table("Predictions" = ntrain.scaled$pred.class, "Actual" = ntrain.scaled$target)
+```
+### Metrics
+#### ACCURACY
+Accuracy can be defined as the fraction of predicitons our model got right. Also known as the error rate, the accuracy rate makes no distinction about the type of error being made.
+$$\large \text{Accuracy} = \large \frac{TP+TN}{TP+FP+TN+FN}$$
+```{r}
+cl_accuracy <- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+  
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  return((TP + TN)/(TP + FP + TN + FN))
+}
+```
+#### CLASSIFICATION ERROR RATE
+The Classification Error Rate calculates the number of incorrect predictions out of the total number of predictions in the dataset.
+$$\large \text{Classification Error Rate} = \large \frac{FP+FN}{TP+FP+TN+FN}$$
+```{r}
+cl_cer <- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+  
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  return((FP + FN)/(TP + FP + TN + FN))
+}
+```
+#### PRECISION
+This is the positive value or the fraction of the positive predictions that are actually positive.
+$$\large \text{Precision} = \large \frac{TP}{TP+FP}$$
+```{r}
+cl_precision <- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+  
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  return(TP/(TP + FP))
+}
+```
+#### SENSITIVITY
+The sensitivity is sometimes considered the true positive rate since it measures the accuracy in the event population.
+$$\large \text{Sensitivity} = \large \frac{TP}{TP+FN}$$
+```{r}
+cl_sensitivity <- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+  
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  return((TP)/(TP + FN))
+}
+```
+#### SPECIFICITY
+This is the true negatitive rate or the proportion of negatives that are correctly identified.
+$$\large \text{Specificity} = \large \frac{TN}{TN+FP}$$
+```{r}
+cl_specificity<- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+   
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  return((TN)/(TN + FP))
+}
+```
+#### F1 SCORE OF PREDICTIONS
+The F1 Score of Predictions measures the test’s accuracy, on a scale of 0 to 1 where a value of 1 is the most accurate and the value of 0 is the least accurate.
+$$\large \text{F1 Score} = \large \frac{2 * Precision*Sensitivity}{Precision + Sensitivity}$$
+```{r}
+cl_f1score <- function(df){
+  cm <- table("Predictions" = df$pred.class, "Actual" = df$target)
+   
+  TP <- cm[2,2]
+  TN <- cm[1,1]
+  FP <- cm[2,1]
+  FN <- cm[1,2]
+  
+  f1score <- (2 * cl_precision(df) * cl_sensitivity(df)) / (cl_precision(df) + cl_sensitivity(df))
+  return(f1score)
+}
+```
+##### F1 SCORE BOUNDS
+```{r}
+f1_score_function <- function(cl_precision, cl_sensitivity){
+  f1_score <- (2*cl_precision*cl_sensitivity)/(cl_precision+cl_sensitivity)
+  return (f1_score)
+}
+(f1_score_function(0, .5))
+(f1_score_function(1, 1))
+p <- runif(100, min = 0, max = 1)
+s <- runif(100, min = 0, max = 1)
+f <- (2*p*s)/(p+s)
+summary(f)
+```
+#### ROC CURVE
+Shows how the true positive rate against the false positive rate at various threshold settings.  The AUC (Area Under Curve) tells how much model is capable of distinguishing between classes. Higher the AUC is better, that is, how well the model is at predicting 0s as 0s and 1s as 1s.
+Creating an ROC Function
+```{r}
+ROC <- function(x, y){
+  x <- x[order(y, decreasing = TRUE)]
+ t_p_r <- cumsum(x) / sum(x)
+ f_p_r <- cumsum(!x) / sum(!x)
+  xy <- data.frame(t_p_r,f_p_r, x)
+  
+ f_p_r_df <- c(diff(xy$f_p_r), 0)
+ t_p_r_df <- c(diff(xy$t_p_r), 0)
+  A_U_C <- round(sum(xy$t_p_r *f_p_r_df) + sum(t_p_r_df *f_p_r_df)/2, 4)
+  
+  plot(xy$f_p_r, xy$t_p_r, type = "l",
+       main = "ROC Curve",
+       xlab = "False Postive Rate",
+       ylab = "True Positive Rate")
+  abline(a = 0, b = 1)
+  legend(.6, .4, A_U_C, title = "Area Under Curve")
+}
+```
+```{r}
+ROC1 <- ROC(ntrain.scaled$target, ntrain.scaled$pred.class)
+ROC1
+```
+```{r}
+roc.mod1 <- roc(ntrain.scaled$target, ntrain.scaled$pred.class)
+plot(roc.mod1, print.auc = TRUE , main = "pROC Model 1")
+```
+Despite the custom and built-in functions for both ROC curves are slightly different, the measure is still the same rounded off to the nearest tenths (`0.91`). However, the second ROC curve is more accurate.
+#### RESULTS
+<br/>
+Listed below are the results of metrics done for the classification model that was chosen (Model 1).
+```{r}
+Metric <- c('Accuracy','Classification Error Rate', 'Precision', 'Sensitivity','Specificity', 'F1 Score')
+Score <- round(c(cl_accuracy(ntrain.scaled), cl_cer(ntrain.scaled), cl_precision (ntrain.scaled), cl_sensitivity(ntrain.scaled), cl_specificity(ntrain.scaled), cl_f1score(ntrain.scaled)),4)
+df_1 <- as.data.frame(cbind(Metric, Score))
+kable(df_1)
+```
+#### CONFUSION MATRIX
+```{r}
+confusionMatrix(data=factor(ntrain.scaled$target), factor(ntrain.scaled$pred.class), positive = "1")
+```
+Compared with the custom functions used, the results are swapped.
+#### Predict on Test Data  -->
+[Results](https://github.com/javernw/DATA621-Business-Analytics-and-Data-Mining/blob/master/Pred_Eval.csv)
+```{r}
+ntest<-select_if(crime_eval, is.numeric)
+ntest.scaled <-  (as.data.frame(scale(ntest))) / 2
+ntest.scaled$prob <- predict(mod1, ntest.scaled, type='response')
+ntest.scaled$pred.class <- ifelse(ntest.scaled$prob >= 0.50, 1, 0)
+write.csv(ntest.scaled,"Pred_Eval.csv", row.names=FALSE)
+```
+#### Appendix -->
+Find Source Code on [GITHUB](https://github.com/javernw/DATA621-Business-Analytics-and-Data-Mining/blob/master/CTG5_Data621_Homework3_PP.Rmd)
