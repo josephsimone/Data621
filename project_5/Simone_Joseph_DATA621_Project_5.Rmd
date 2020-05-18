@@ -1,0 +1,527 @@
+---
+title: "DATA621 Homework 5"
+author: "Javern Wilson, Joseph Simone, Jack Russo"
+date: "4/27/2020"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    highlight: pygments
+    theme: yeti
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+---
+**Overview**
+In this homework assignment, we will explore, analyze and model a data set containing information on approximately 12,000 commercially available wines. The variables are mostly related to the chemical properties of the wine being sold. The response variable is the number of sample cases of wine that were purchased by wine distribution companies after sampling a wine. These cases would be used to provide tasting samples to restaurants and wine stores around the United States. The more sample cases purchased, the more likely is a wine to be sold at a high end restaurant. A large wine manufacturer is studying the data in order to predict the number of wine cases ordered based upon the wine characteristics. If the wine manufacturer can predict the number of cases, then that manufacturer will be able to adjust their wine offering to maximize sales.
+Our objective is to build a count regression model to predict the number of cases of wine that will be sold given certain properties of the wine. HINT: Sometimes, the fact that a variable is missing is actually predictive of the target. We will only use the variables given to us (or variables that we derive from the variables provided). Below is a short description of the variables of interest in the data set:
+VARIABLE NAME DEFINITION THEORETICAL EFFECT
++ `INDEX`: Identification Variable (do not use)
+  - **EFFECT:** None
++ `TARGET` Number of Cases Purchased
+  - **EFFECT:** None
++ `AcidIndex`: Proprietary method of testing total acidity of wine by using a weighted average
++ `Alcohol`: Alcohol Content
++ `Chlorides`: Chloride content of wine
++ `CitricAcid`: Citric Acid Content
++ `Density`: Density of Wine
++ `FixedAcidity`: Fixed Acidity of Wine
++ `FreeSulfurDioxide`: Sulfur Dioxide content of wine
++ `LabelAppeal`: Marketing Score indicating the appeal of label design for consumers. High numbers suggest customers like the label design. Negative numbers suggest customes don't like the design.
+  - **EFFECT**: Many consumers purchase based on the visual appeal of the wine label design. Higher numbers suggest better sales.
++ `ResidualSugar`: Residual Sugar of wine STARS Wine rating by a team of experts. 4 Stars = Excellent, 1 Star = Poor
+  - **EFFECT:** A high number of stars suggests high sales
++ `Sulphates`: Sulfate conten of wine
++ `TotalSulfurDioxide`: Total Sulfur Dioxide of Wine
++ `VolatileAcidity`: Volatile Acid content of wine
++ `pH`: pH of wine
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(e1071)
+library(pracma)
+library(pROC)
+library(psych)
+library(kableExtra)
+library(Hmisc)
+library(VIF)
+library(FactoMineR)
+library(corrplot)
+library(purrr)
+library(dplyr)
+library(MASS)
+library(mice)
+library(gridExtra)
+library(kableExtra)
+library(lindia)
+library(car)
+library(reshape2)
+library(cycleRtools)
+library(pscl)
+```
+```{r}
+wine_train <- read.csv("https://raw.githubusercontent.com/javernw/DATA621-Business-Analytics-and-Data-Mining/master/wine-training-data.csv")
+wine_eval <- read.csv("https://raw.githubusercontent.com/javernw/DATA621-Business-Analytics-and-Data-Mining/master/wine-evaluation-data.csv")
+```
+## DATA EXPLORATION
+### Preview
+```{r}
+head(wine_train) %>% as_tibble()
+```
+```{r}
+str(wine_train)
+```
+```{r}
+summary(wine_train)
+```
+### Top Amount of cases purchased
+```{r}
+cases_purchased <- table(wine_train$TARGET) %>% data.frame()
+cases_purchased %>% ggplot(aes(x = Var1, y = Freq)) + geom_bar(stat = "identity", fill = "blue") + labs(x = "Cases", y = "Counts")
+```
+### Skewness in Data
+```{r, fig.height=6, fig.width=9, message=FALSE, warning=FALSE}
+w1 = melt(wine_train[,-1])
+ggplot(w1, aes(x= value)) +
+    geom_density(fill='blue') + facet_wrap(~variable, scales = 'free')
+```
+A few of the variables have multimodal distribution (`TARGET`, `LabelAppeal`, `STARS`) while the others seem to be normally distrbuted due to bell curve they display.
+### Marketing Scores
+```{r, fig.width=7, fig.height=6}
+m_scores <- wine_train$LabelAppeal %>% table() %>% data.frame() %>%  mutate(per = (Freq/sum(Freq))*100)
+names(m_scores)[1]<-"score"
+lbls <- paste(m_scores$score, "\n", round(m_scores$per, 2)) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+pie(m_scores$Freq,labels = lbls, col= c("#990000", "#336600", "#CC6600", "#CCCC00", "#4CC099"), main="Marketing Scores Proportioned")
+```
+About 28% of the wine are not favored by customers based on their label designs
+### Boxplot: Exploring Outliers
+```{r, fig.width=9, fig.width=6, fig.align="center"}
+ggplot(stack(wine_train[,-1]), aes(x = ind, y = values)) +
+  geom_boxplot() +
+   theme(legend.position="none") +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  theme(panel.background = element_rect(fill = 'grey'))
+```
+### Correlation
+```{r}
+wine_corr <- cor(wine_train[,-1], use = "na.or.complete")
+corrplot(wine_corr)
+```
+We can see that there is come moderate but postive corrleation among the target variable and predictors `STARS` and `LabelAppeal`.
+### Missing Values
+```{r}
+Amelia::missmap(wine_train, col = c("#999900", "#660033"))
+```
+4% of the data is missing which we will later handle as we move forward
+## DATA PREPARATION
+### Handing Negative values
+### Creates summary metrics table
+```{r}
+sm <- function(df){
+  m <- df[, sapply(df, is.numeric)]
+  dfm<- psych::describe(m, quant = c(.25,.75))
+  dfm$unique_values = rapply(m, function(x) length(unique(x)))
+  dfm<-
+    dplyr::select(dfm, n, unique_values, min, Q.1st = Q0.25, median, mean, Q.3rd = Q0.75,
+    max, range, sd, skew, kurtosis
+  )
+  return(dfm)
+}
+```
+```{r}
+mdf <- sm(wine_train)
+```
+```{r}
+nv_values <-
+  dplyr::select(wine_train,
+              intersect(rownames(mdf)[mdf$unique_values > 15],
+              rownames(mdf)[mdf$min < 0])
+              )
+n_prop <- t(apply(nv_values, 2, function(x) prop.table(table(x < 0))))
+data.frame(
+  Var = rownames(n_prop),
+  negative_value = n_prop[, 2]
+) %>% arrange(-negative_value) %>%
+  kable(digits = 2)
+```
+```{r}
+wine_train <- wine_train[,-1]
+temp <- mice(wine_train[,-1],m=5,maxit=10,meth='pmm',seed=500, printFlag = F)
+temp <- complete(temp)
+temp$TARGET <- wine_train$TARGET
+wine_train <- temp
+```
+### New Variable variables
+```{r}
+wine_train$BoundSulfurDioxide <- wine_train$TotalSulfurDioxide - wine_train$FreeSulfurDioxide
+```
+### Conversion of negative values to absolute
+```{r}
+wine_train$FixedAcidity <- abs(wine_train$FixedAcidity)
+wine_train$VolatileAcidity <- abs(wine_train$VolatileAcidity)
+wine_train$CitricAcid <- abs(wine_train$CitricAcid)
+wine_train$ResidualSugar <- abs(wine_train$ResidualSugar)
+wine_train$Chlorides <- abs(wine_train$Chlorides)
+wine_train$FreeSulfurDioxide <- abs(wine_train$FreeSulfurDioxide)
+wine_train$TotalSulfurDioxide <- abs(wine_train$TotalSulfurDioxide)
+wine_train$BoundSulfurDioxide <- abs(wine_train$BoundSulfurDioxide)
+wine_train$Sulphates <- abs(wine_train$Sulphates)
+wine_train$Alcohol <- abs(wine_train$Alcohol)
+```
+```{r}
+wine_train$PerVolume <- wine_train$VolatileAcidity/(wine_train$FixedAcidity+wine_train$VolatileAcidity)
+```
+```{r}
+wine_train$LabelAppeal <- wine_train$LabelAppeal+2
+```
+```{r}
+wine_train2<-wine_train
+wine_train2$STARS <- as.factor(wine_train2$STARS)
+```
+```{r}
+wine_train <- wine_train[, !(colnames(wine_train) %in% c("INDEX"))]
+```
+```{r}
+wine_train <- dplyr::select_if(wine_train, is.numeric)
+rcorr(as.matrix(wine_train))
+```
+## BUILD MODELS
+**(at least two for each)**
+### Poisson Models
+```{r}
+p_mod1 <- glm(TARGET ~., family="poisson", data=wine_train)
+summary(p_mod1)
+```
+```{r}
+p_mod2 <- stepAIC(p_mod1, trace = F)
+summary(p_mod2)
+```
+### Negative Binomial Models
+```{r}
+nb_mod1 <- glm.nb(TARGET ~., data = wine_train)
+summary(nb_mod1)
+```
+```{r, warning=F}
+nb_mod2 <- stepAIC(nb_mod1, trace = F)
+summary(nb_mod2)
+```
+### Multiple Linear Regression Models
+```{r}
+lm_mod1 <- lm(TARGET ~., data = wine_train2)
+summary(lm_mod1)
+```
+```{r}
+lm_mod2 <- stepAIC(lm_mod1, trace = F)
+summary(lm_mod2)
+```
+## SELECT MODELS
+
+To select the models, we'll use AIC and MSE to measure accuracy of the predicted values.
+Below, the Poisson, Negative Binomial, and Multiple Linear Regression have been compared to select the model with the lowest AIC.
+
+### Comparison of Poisson Models
+
+We'll need to compare the AIC's of each Possion Model.
+
+```{r}
+aic_p_mod1 <- p_mod1$aic
+aic_p_mod2 <- p_mod2$aic
+aic_p_mod1
+aic_p_mod2
+```
+
+Poisson Model 2 proves to have the lower AIC of the two, with a 50826.34 AIC. Below is the formula for Possion Model 2.
+
+```{r}
+# Poisson - Minium AIC
+c(p_mod1$formula,p_mod2$formula)[which.min(c(p_mod1$aic,p_mod2$aic))]
+```
+
+
+### Comparison of Negative Binomial Models
+
+We'll need to compare the AIC's of each Negative Binomial Model.
+
+```{r}
+aic_nb_mod1 <- nb_mod1$aic
+aic_nb_mod2 <- nb_mod2$aic
+aic_nb_mod1
+aic_nb_mod2
+```
+
+Negative Binomial Model 2 proves to have the lower AIC of the two, with a 50828.43 AIC. Below is the formula for Negative Binomial Model 2.
+
+```{r}
+# Negative Binomial - Minium AIC
+c(formula(nb_mod1),formula(nb_mod2))[which.min(c(nb_mod1$aic, nb_mod2$aic))]
+```
+
+
+### Comparsion of Multiple Linar Models
+
+We'll need to compare the Adjusted R Squares of each Linear Model.
+
+```{r}
+r2_lm_mod1 <- summary(lm_mod1)$adj.r.squared
+r2_lm_mod2 <- summary(lm_mod2)$adj.r.squared
+r2_lm_mod1
+r2_lm_mod2
+```
+
+Linear Model 2 proves to have the higher Adjusted R Squares, with a value of 0.2552485. Below is the formula for Linear Model 2.
+
+```{r}
+# Multiple Linear Regression Model - Highest Adjusted R Squared
+c(formula(lm_mod1),formula(lm_mod2))[which.max(c(summary(lm_mod1)$adj.r.squared, summary(lm_mod2)$adj.r.squared))]
+```
+
+
+#### Mean Square Error
+
+The Mean Square Error measures the averaged square different between the etsimated values and the actual value. The lower the value of the MSE, the more accurately the model is able to predict the values.
+
+$$\large \text{MSE} = \large \frac{1}{n} \sum(y - \hat{y})^2$$
+
+```{r}
+mse <- function(df, model){
+  mean((df$TARGET - predict(model))^2)
+}
+```
+
+```{r}
+mse_p_mod1 <- mse(wine_train, p_mod1)
+mse_p_mod2 <- mse(wine_train, p_mod2)
+mse_nb_mod1 <- mse(wine_train, nb_mod1)
+mse_nb_mod2 <- mse(wine_train, nb_mod2)
+```
+
+#### Comparison of Possion and Negative Binomial Model's
+
+By evaluating the AIC's and MSE's of each model, we can choose the best one be looking at the lowest AIC and lowest MSE.
+
+```{r}
+models <- c("Possion Model 1", "Possion Model 2", "Negative Binomial Model 1", "Negative Binomial Model 2")
+#rows <- c("Models", "MSE", "AIC")
+MSE <- list(mse_p_mod1, mse_p_mod2, mse_nb_mod1, mse_nb_mod2)
+AIC <- list(aic_p_mod1, aic_p_mod2, aic_nb_mod1, aic_nb_mod2)
+
+kable(rbind(MSE, AIC), col.names = models)
+```
+
+Though Poisson Model 2 has a slightly higher MSE than Negative Binomial Model 2, it does have a lower AIC.
+
+#### Transform Evaluation Data Set
+```{r}
+wine_eval$BoundSulfurDioxide <- wine_eval$TotalSulfurDioxide - wine_eval$FreeSulfurDioxide
+wine_eval$FixedAcidity <- abs(wine_eval$FixedAcidity)
+wine_eval$VolatileAcidity <- abs(wine_eval$VolatileAcidity)
+wine_eval$CitricAcid <- abs(wine_eval$CitricAcid)
+wine_eval$ResidualSugar <- abs(wine_eval$ResidualSugar)
+wine_eval$Chlorides <- abs(wine_eval$Chlorides)
+wine_eval$FreeSulfurDioxide <- abs(wine_eval$FreeSulfurDioxide)
+wine_eval$TotalSulfurDioxide <- abs(wine_eval$TotalSulfurDioxide)
+wine_eval$BoundSulfurDioxide <- abs(wine_eval$BoundSulfurDioxide)
+wine_eval$Sulphates <- abs(wine_eval$Sulphates)
+wine_eval$Alcohol <- abs(wine_eval$Alcohol)
+```
+
+```{r}
+prob <- predict(p_mod2, wine_eval, type='response')
+wine_eval$TARGET_FLAG <- prob
+wine_eval %>% head(10) %>% as_tibble()
+write.csv(wine_eval, "wine_predictions.csv", row.names = FALSE)
+```
+
+
+A few of the variables have multimodal distribution (`TARGET`, `LabelAppeal`, `STARS`) while the others seem to be normally distrbuted due to bell curve they display.
+### Marketing Scores
+```{r, fig.width=7, fig.height=6}
+m_scores <- wine_train$LabelAppeal %>% table() %>% data.frame() %>%  mutate(per = (Freq/sum(Freq))*100)
+names(m_scores)[1]<-"score"
+lbls <- paste(m_scores$score, "\n", round(m_scores$per, 2)) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+pie(m_scores$Freq,labels = lbls, col= c("#990000", "#336600", "#CC6600", "#CCCC00", "#4CC099"), main="Marketing Scores Proportioned")
+```
+About 28% of the wine are not favored by customers based on their label designs
+### Boxplot: Exploring Outliers
+```{r, fig.width=9, fig.width=6, fig.align="center"}
+ggplot(stack(wine_train[,-1]), aes(x = ind, y = values)) +
+  geom_boxplot() +
+   theme(legend.position="none") +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) +
+  theme(panel.background = element_rect(fill = 'grey'))
+```
+
+
+4% of the data is missing which we will later handle as we move forward
+
+## BUILD MODELS
+**(at least two for each)**
+### Poisson Models
+```{r}
+p_mod1 <- glm(TARGET ~., family="poisson", data=wine_train)
+summary(p_mod1)
+```
+```{r}
+p_mod2 <- stepAIC(p_mod1, trace = F)
+summary(p_mod2)
+```
+### Negative Binomial Models
+```{r}
+nb_mod1 <- glm.nb(TARGET ~., data = wine_train)
+summary(nb_mod1)
+```
+```{r, warning=F}
+nb_mod2 <- stepAIC(nb_mod1, trace = F)
+summary(nb_mod2)
+```
+### Multiple Linear Regression Models
+```{r}
+lm_mod1 <- lm(TARGET ~., data = wine_train2)
+summary(lm_mod1)
+```
+```{r}
+lm_mod2 <- stepAIC(lm_mod1, trace = F)
+summary(lm_mod2)
+```
+
+
+## SELECT MODELS
+
+To select the models, we'll use AIC and MSE to measure accuracy of the predicted values.
+Below, the Poisson, Negative Binomial, and Multiple Linear Regression have been compared to select the model with the lowest AIC.
+
+### Comparison of Poisson Models
+
+## SELECT MODELS
+```{r}
+# Poissson - Minium AIC
+c(p_mod1$formula,p_mod2$formula)[which.min(c(p_mod1$aic,p_mod2$aic))]
+```
+```{r}
+# Negative Binomial - Minium AIC
+c(formula(nb_mod1),formula(nb_mod2))[which.min(c(nb_mod1$aic, nb_mod2$aic))]
+```
+```{r}
+# Multiple Linear Regression Model - Highest Adjusted R Squared
+c(formula(lm_mod1),formula(lm_mod2))[which.max(c(summary(lm_mod1)$adj.r.squared, summary(lm_mod2)$adj.r.squared))]
+```
+
+We'll need to compare the AIC's of each Possion Model.
+
+```{r}
+aic_p_mod1 <- p_mod1$aic
+aic_p_mod2 <- p_mod2$aic
+aic_p_mod1
+aic_p_mod2
+```
+
+Poisson Model 2 proves to have the lower AIC of the two, with a 50826.34 AIC. Below is the formula for Possion Model 2.
+
+```{r}
+# Poisson - Minium AIC
+c(p_mod1$formula,p_mod2$formula)[which.min(c(p_mod1$aic,p_mod2$aic))]
+```
+
+
+### Comparison of Negative Binomial Models
+
+We'll need to compare the AIC's of each Negative Binomial Model.
+
+```{r}
+aic_nb_mod1 <- nb_mod1$aic
+aic_nb_mod2 <- nb_mod2$aic
+aic_nb_mod1
+aic_nb_mod2
+```
+
+Negative Binomial Model 2 proves to have the lower AIC of the two, with a 50828.43 AIC. Below is the formula for Negative Binomial Model 2.
+
+```{r}
+# Negative Binomial - Minium AIC
+c(formula(nb_mod1),formula(nb_mod2))[which.min(c(nb_mod1$aic, nb_mod2$aic))]
+```
+
+
+### Comparsion of Multiple Linar Models
+
+We'll need to compare the Adjusted R Squares of each Linear Model.
+
+```{r}
+r2_lm_mod1 <- summary(lm_mod1)$adj.r.squared
+r2_lm_mod2 <- summary(lm_mod2)$adj.r.squared
+r2_lm_mod1
+r2_lm_mod2
+```
+
+Linear Model 2 proves to have the higher Adjusted R Squares, with a value of 0.2552485. Below is the formula for Linear Model 2.
+
+```{r}
+# Multiple Linear Regression Model - Highest Adjusted R Squared
+c(formula(lm_mod1),formula(lm_mod2))[which.max(c(summary(lm_mod1)$adj.r.squared, summary(lm_mod2)$adj.r.squared))]
+```
+
+
+#### Mean Square Error
+
+The Mean Square Error measures the averaged square different between the etsimated values and the actual value. The lower the value of the MSE, the more accurately the model is able to predict the values.
+
+$$\large \text{MSE} = \large \frac{1}{n} \sum(y - \hat{y})^2$$
+
+```{r}
+mse <- function(df, model){
+  mean((df$TARGET - predict(model))^2)
+}
+```
+
+```{r}
+mse_p_mod1 <- mse(wine_train, p_mod1)
+mse_p_mod2 <- mse(wine_train, p_mod2)
+mse_nb_mod1 <- mse(wine_train, nb_mod1)
+mse_nb_mod2 <- mse(wine_train, nb_mod2)
+```
+
+#### Comparison of Possion and Negative Binomial Model's
+
+By evaluating the AIC's and MSE's of each model, we can choose the best one be looking at the lowest AIC and lowest MSE.
+
+```{r}
+models <- c("Possion Model 1", "Possion Model 2", "Negative Binomial Model 1", "Negative Binomial Model 2")
+#rows <- c("Models", "MSE", "AIC")
+MSE <- list(mse_p_mod1, mse_p_mod2, mse_nb_mod1, mse_nb_mod2)
+AIC <- list(aic_p_mod1, aic_p_mod2, aic_nb_mod1, aic_nb_mod2)
+
+kable(rbind(MSE, AIC), col.names = models)
+```
+
+Though Poisson Model 2 has a slightly higher MSE than Negative Binomial Model 2, it does have a lower AIC.
+
+#### Transform Evaluation Data Set
+```{r}
+wine_eval$BoundSulfurDioxide <- wine_eval$TotalSulfurDioxide - wine_eval$FreeSulfurDioxide
+wine_eval$FixedAcidity <- abs(wine_eval$FixedAcidity)
+wine_eval$VolatileAcidity <- abs(wine_eval$VolatileAcidity)
+wine_eval$CitricAcid <- abs(wine_eval$CitricAcid)
+wine_eval$ResidualSugar <- abs(wine_eval$ResidualSugar)
+wine_eval$Chlorides <- abs(wine_eval$Chlorides)
+wine_eval$FreeSulfurDioxide <- abs(wine_eval$FreeSulfurDioxide)
+wine_eval$TotalSulfurDioxide <- abs(wine_eval$TotalSulfurDioxide)
+wine_eval$BoundSulfurDioxide <- abs(wine_eval$BoundSulfurDioxide)
+wine_eval$Sulphates <- abs(wine_eval$Sulphates)
+wine_eval$Alcohol <- abs(wine_eval$Alcohol)
+```
+
+```{r}
+prob <- predict(p_mod2, wine_eval, type='response')
+wine_eval$TARGET_FLAG <- prob
+wine_eval %>% head(10) %>% as_tibble()
+write.csv(wine_eval, "wine_predictions.csv", row.names = FALSE)
+```
+
+
